@@ -1,15 +1,15 @@
-from redis.asyncio import Redis
+from redis.asyncio import RedisCluster
 from app.core.config import settings
 
-redis_client: Redis = None
+redis_client: RedisCluster = None
 
-async def get_redis_client() -> Redis:
+async def get_redis_client() -> RedisCluster:
     """
     Get a Redis client instance.
     """
     global redis_client
     if redis_client is None:
-        redis_client = Redis(
+        redis_client = RedisCluster(
             host=settings.redis_host,
             port=settings.redis_port,
             db=settings.redis_db,

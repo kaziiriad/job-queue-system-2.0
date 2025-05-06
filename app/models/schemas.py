@@ -58,8 +58,8 @@ class JobModel(BaseModel):
     @classmethod
     def from_jobupdate(cls, job_update: JobUpdate, existing_job: 'JobModel') -> 'JobModel':
         # Merge the update data into the existing JobModel
-        updated_data = existing_job.dict(exclude_unset=True)  # Get existing job data as a dictionary
-        update_data = job_update.dict(exclude_unset=True)    # Get updates as a dictionary
+        updated_data = existing_job.model_dump(exclude_unset=True)  # Get existing job data as a dictionary
+        update_data = job_update.model_dump(exclude_unset=True)    # Get updates as a dictionary
 
         # Merge the dictionaries
         updated_data.update(update_data)
