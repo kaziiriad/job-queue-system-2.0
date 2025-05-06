@@ -13,3 +13,4 @@ class JobStatus(str, Enum):
     retrying = 'retrying'  # Used for tracking retries
     cancelled = 'cancelled'
     completed = 'completed'
+
