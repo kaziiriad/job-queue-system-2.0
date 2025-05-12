@@ -1,0 +1,64 @@
+
+version: '3.8'
+
+services:
+  redis:
+      image: redis
+      ports:
+        - "6379:6379"
+      volumes:
+        - redis_data:/data
+        
+  job_api:
+    build: 
+      context: .
+      dockerfile: Dockerfile.job_queue
+    ports:
+      - "8000:8000"
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_URL=redis://${REDIS_HOST}:${REDIS_PORT}/0
+    depends_on:
+      - redis
+
+  worker:
+    build: 
+      context: .
+      dockerfile: Dockerfile.worker
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_URL=redis://${REDIS_HOST}:${REDIS_PORT}/0
+    depends_on:
+      - redis
+      - job_api
+    
+  monitor:
+    build: 
+      context: .
+      dockerfile: Dockerfile.monitor
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_URL=redis://${REDIS_HOST}:${REDIS_PORT}/0
+      - BASE_URL=http://job_api:8000
+      # - RUNNING_IN_CLOUD=False
+      - DOCKER_SERVICE_NAME=worker
+      - MIN_WORKER_REPLICAS=1
+      - MAX_WORKER_REPLICAS=5
+      - MONITOR_CHECK_INTERVAL=30
+      - WORKER_HEARTBEAT_TIMEOUT=30
+      - WORKER_SCALE_THRESHOLD=10
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock  # Mount Docker socket
+    depends_on:
+      - redis
+      - job_api
+      - worker
+
+  
+
+volumes:
+  redis_data:
+

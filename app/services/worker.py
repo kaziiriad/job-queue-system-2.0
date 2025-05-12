@@ -1,21 +1,22 @@
 import asyncio
 from datetime import datetime, timezone
 from typing import Optional
-from uuid import UUID
+import uuid  # Import uuid module explicitly
 import logging
 from fastapi import HTTPException
-from redis.asyncio import RedisCluster
-from app.core.dependencies import get_redis_client
-from app.models.schemas import JobModel, JobUpdate, JobResult, Worker
-from app.models.enums import JobStatus
-from app.core.config import settings
-from app.utils.redis_keys import RedisKeyManager
-from app.utils.redis_ops import execute_pipeline
-from app.services.queue import JobQueueService
-# from ..core.dependencies import get_redis_client
+from redis.asyncio import Redis
+
+# Use relative imports
+from ..core.dependencies import get_redis_client
+from ..models.schemas import JobModel, JobUpdate, JobResult, Worker
+from ..models.enums import JobStatus
+from ..core.config import settings
+from ..utils.redis_keys import RedisKeyManager
+from ..utils.redis_ops import execute_pipeline
+from .queue import JobQueueService
 
 class WorkerService:
-    def __init__(self, client: RedisCluster, queue_name: str = settings.QUEUE_NAME):
+    def __init__(self, client: Redis, queue_name: str = settings.QUEUE_NAME):
         self.redis_client = client
         self.queue_name = queue_name
         self.keys = RedisKeyManager(system_prefix=queue_name)
@@ -27,11 +28,15 @@ class WorkerService:
         # self.worker_heartbeat_timeout = 30
 
     async def register_worker(self) -> Optional[dict]:
-        self.worker_id = str(UUID())
+        # Fix: Use uuid.uuid4() to generate a random UUID
+        self.worker_id = str(uuid.uuid4())
+        # Convert datetime to ISO format string for last_heartbeat
+        current_time_iso = datetime.now(timezone.utc).isoformat()
+        
         self.worker = Worker(
             worker_id=self.worker_id,
             status='active',
-            last_heartbeat=datetime.now(timezone.utc),
+            last_heartbeat=current_time_iso,  # Use string format instead of datetime object
             queue_name=self.queue_name
         )
         def pipeline_operations(pipe):
@@ -143,10 +148,10 @@ class WorkerService:
             )
             return JobResult(job_id=job.job_id, status=JobStatus.failed, error_message=str(e))
 
-    async def process_next_job(self) -> tuple[bool, JobResult]:
+    async def process_next_job(self) -> tuple[bool, Optional[JobResult]]:
         job = await self.job_queue_service.dequeue_job()
         if not job:
-            return False, JobResult(status=JobStatus.failed, error_message="No jobs")
+            return False, JobResult(status=JobStatus.failed, error_message="No jobs available to process")
 
         try:
             if job.retry_count >= job.max_retries:
@@ -182,21 +187,36 @@ class WorkerService:
             await self.register_worker()
             asyncio.create_task(self._heartbeat_task())
             while True:
-                await self.process_next_job()
+                success, result = await self.process_next_job()
+                if not success:
+                    self.logger.info(f"Job processing failed: {result.error_message}")
                 await asyncio.sleep(0.1)  # Prevent tight loop
         except asyncio.CancelledError:
             await self.deregister_worker()
         except Exception as e:
             self.logger.error(f"Worker failed: {e}")
-            await self.deregister_worker()
+            if self.worker_id:  # Only try to deregister if we have a worker_id
+                await self.deregister_worker()
 
 
 if __name__ == "__main__":
+    import sys
+    import os
+    import logging
+    
+    # Configure logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    
+    # Add the parent directory to sys.path when running as main script
+    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
     async def main():
-        worker = WorkerService(client=get_redis_client(), queue_name=settings.QUEUE_NAME)
+        # Fix: Await the get_redis_client function
+        redis_client = await get_redis_client()
+        worker = WorkerService(client=redis_client, queue_name=settings.QUEUE_NAME)
         await worker.run()
 
     asyncio.run(main())  # Run the worker
-
-   

@@ -4,15 +4,15 @@ from fastapi import HTTPException
 from ..models.schemas import JobCreate, JobModel, JobUpdate
 from ..models.enums import JobStatus, PriorityLevel
 from ..core.config import settings
-from ..utils.redis_ops import execute_pipeline
-from ..utils.redis_keys import RedisKeyManager
+from ..utils.redis_ops import execute_pipeline # type: ignore
+from ..utils.redis_keys import RedisKeyManager # type: ignore
 import logging
 
 logger = logging.getLogger(__name__)
 
 
 class JobQueueService:
-    def __init__(self, client, queue_name: str = settings.REDIS_QUEUE):  # default queue name is 'video_processing_queue'):
+    def __init__(self, client, queue_name: str = settings.QUEUE_NAME):  # default queue name is 'video_processing_queue'):
         # self.dlq_name = f"{queue_name}:dlq"
         self.redis_client = client
         self.queue_name = queue_name
@@ -47,7 +47,7 @@ class JobQueueService:
     async def dequeue_job(self) -> Optional[JobModel]:
         # Dequeue a job from the queue by priority
         for priority in [PriorityLevel.high, PriorityLevel.normal, PriorityLevel.low]:
-            processing_queue = self.keys.processing_queue()
+            processing_queue = self.keys.processing_queue_key()
             job_id = await self.redis_client.brpoplpush(
                 self.keys.priority_queue(priority),
                 processing_queue,

@@ -1,4 +1,4 @@
-from redis.asyncio import RedisCluster
+from redis.asyncio import Redis
 from typing import Optional
 import logging
 from uuid import UUID
@@ -6,7 +6,7 @@ from uuid import UUID
 logger = logging.getLogger(__name__)
 
 async def execute_pipeline(
-    redis_client: RedisCluster, 
+    redis_client: Redis, 
     pipeline_function
 ) -> Optional[dict]:
     pipe = redis_client.pipeline()
@@ -15,6 +15,6 @@ async def execute_pipeline(
         await pipe.execute()
         return result
     except Exception as e:
-        await pipe.discard()
+        # ClusterPipeline doesn't have a discard() method
         logger.error(f"Pipeline failed: {e}")
         raise

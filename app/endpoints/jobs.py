@@ -6,7 +6,7 @@ from pydantic import ValidationError
 from typing import List, Optional
 import pathlib
 from uuid import UUID
-from redis.asyncio import RedisCluster
+from redis.asyncio import Redis
 from ..models.schemas import JobCreate, JobModel, JobUpdate
 from ..models.enums import JobStatus, PriorityLevel
 from ..services.queue import JobQueueService
@@ -22,7 +22,7 @@ templates = Jinja2Templates(directory=str(templates_path))
 
 
 @job_router.get("/manage", response_class=HTMLResponse, tags=["UI"])
-async def job_management_ui(request: Request, redis_client: RedisCluster = Depends(get_redis_client)):
+async def job_management_ui(request: Request, redis_client: Redis = Depends(get_redis_client)):
     """
     Render the job management UI.
     """
@@ -52,7 +52,7 @@ async def job_management_ui(request: Request, redis_client: RedisCluster = Depen
         )
 
 @job_router.get("/", response_model=List[JobModel])
-async def get_all_jobs(redis_client: RedisCluster = Depends(get_redis_client)):
+async def get_all_jobs(redis_client: Redis = Depends(get_redis_client)):
     """
     Get all jobs.
     """
@@ -64,7 +64,7 @@ async def get_all_jobs(redis_client: RedisCluster = Depends(get_redis_client)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @job_router.post("/create", response_model=JobModel)
-async def create_job(job_create: JobCreate, redis_client: RedisCluster = Depends(get_redis_client)):
+async def create_job(job_create: JobCreate, redis_client: Redis = Depends(get_redis_client)):
     """
     Create a new job in the queue.
     """
@@ -78,7 +78,7 @@ async def create_job(job_create: JobCreate, redis_client: RedisCluster = Depends
         raise HTTPException(status_code=500, detail=str(e))
 
 @job_router.get("/{job_id}", response_model=JobModel)
-async def get_job(job_id: str, redis_client: RedisCluster = Depends(get_redis_client)):
+async def get_job(job_id: str, redis_client: Redis = Depends(get_redis_client)):
     """
     Get a job by its ID.
     """
@@ -91,7 +91,7 @@ async def get_job(job_id: str, redis_client: RedisCluster = Depends(get_redis_cl
     # Handle specific exceptions as needed
 
 @job_router.put("/{job_id}", response_model=JobModel)
-async def update_job(job_id: str, job_update: JobUpdate, redis_client: RedisCluster = Depends(get_redis_client)):
+async def update_job(job_id: str, job_update: JobUpdate, redis_client: Redis = Depends(get_redis_client)):
     """
     Update a job by its ID.
     """
@@ -104,7 +104,7 @@ async def update_job(job_id: str, job_update: JobUpdate, redis_client: RedisClus
     # Handle specific exceptions as needed
 
 @job_router.post("/cancel/{job_id}", response_model=JobModel)
-async def cancel_job(job_id: str, redis_client: RedisCluster = Depends(get_redis_client)):
+async def cancel_job(job_id: str, redis_client: Redis = Depends(get_redis_client)):
     """
     Cancel a job by its ID.
     """

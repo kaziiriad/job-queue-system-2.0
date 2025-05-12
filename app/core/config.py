@@ -1,4 +1,5 @@
-from pydantic_settings import BaseSettings, Field
+from pydantic_settings import BaseSettings
+from pydantic import Field
 import os
 from dotenv import load_dotenv
 
@@ -22,6 +23,11 @@ class Settings(BaseSettings):
     DOCKER_SERVICE_NAME: str = Field(default=os.getenv("DOCKER_SERVICE_NAME", "worker"))
     MAX_WORKER_REPLICAS: int = Field(default=os.getenv("MAX_WORKER_REPLICAS", 5))
     MIN_WORKER_REPLICAS: int = Field(default=os.getenv("MIN_WORKER_REPLICAS", 1))
+    MONITOR_CHECK_INTERVAL: int = Field(default=os.getenv("MONITOR_CHECK_INTERVAL", 30))
+    WORKER_HEARTBEAT_TIMEOUT: int = Field(default=os.getenv("WORKER_HEARTBEAT_TIMEOUT", 30))
+    WORKER_SCALE_THRESHOLD: int = Field(default=os.getenv("WORKER_SCALE_THRESHOLD", 10))
+
+
     
     class Config:
         env_file = ".env"
