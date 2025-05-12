@@ -1,7 +1,10 @@
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import HTMLResponse
+from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
 from typing import List, Optional
+import pathlib
 from uuid import UUID
 from redis.asyncio import RedisCluster
 from ..models.schemas import JobCreate, JobModel, JobUpdate
@@ -12,6 +15,53 @@ from ..core.config import settings
 from ..utils.redis_keys import RedisKeyManager
 
 job_router = APIRouter(prefix="/jobs", tags=["Jobs"])
+
+# Set up Jinja2 templates
+templates_path = pathlib.Path(__file__).parent.parent / "templates"
+templates = Jinja2Templates(directory=str(templates_path))
+
+
+@job_router.get("/manage", response_class=HTMLResponse, tags=["UI"])
+async def job_management_ui(request: Request, redis_client: RedisCluster = Depends(get_redis_client)):
+    """
+    Render the job management UI.
+    """
+    try:
+        job_service = JobQueueService(client=redis_client)
+        jobs = await job_service.get_all_jobs()
+        
+        # Sort jobs by creation date (newest first)
+        jobs.sort(key=lambda x: x.created_at, reverse=True)
+        
+        return templates.TemplateResponse(
+            "job_management.html",
+            {
+                "request": request,
+                "jobs": jobs
+            }
+        )
+    except Exception as e:
+        # Log the error but still render the template with empty jobs list
+        print(f"Error fetching jobs: {str(e)}")
+        return templates.TemplateResponse(
+            "job_management.html",
+            {
+                "request": request,
+                "jobs": []
+            }
+        )
+
+@job_router.get("/", response_model=List[JobModel])
+async def get_all_jobs(redis_client: RedisCluster = Depends(get_redis_client)):
+    """
+    Get all jobs.
+    """
+    try:
+        job_service = JobQueueService(client=redis_client)
+        jobs = await job_service.get_all_jobs()
+        return jobs
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @job_router.post("/create", response_model=JobModel)
 async def create_job(job_create: JobCreate, redis_client: RedisCluster = Depends(get_redis_client)):
@@ -40,26 +90,29 @@ async def get_job(job_id: str, redis_client: RedisCluster = Depends(get_redis_cl
         raise HTTPException(status_code=500, detail=str(e))
     # Handle specific exceptions as needed
 
+@job_router.put("/{job_id}", response_model=JobModel)
+async def update_job(job_id: str, job_update: JobUpdate, redis_client: RedisCluster = Depends(get_redis_client)):
+    """
+    Update a job by its ID.
+    """
+    try:
+        job_service = JobQueueService(client=redis_client)
+        job_response = await job_service.update_job(job_id, job_update)
+        return job_response
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    # Handle specific exceptions as needed
 
-@job_router.get("/metrics/queue")
-async def get_queue_metrics(redis: RedisCluster = Depends(get_redis_client)):
-    service = JobQueueService(redis)
-    return {
-        "pending_high": await redis.llen(service.keys.priority_queue(PriorityLevel.high)),
-        "pending_normal": await redis.llen(service.keys.priority_queue(PriorityLevel.normal)),
-        "pending_low": await redis.llen(service.keys.priority_queue(PriorityLevel.low)),
-        "processing": await redis.scard(service.keys.processing_queue()),
-        "dead_letters": await redis.hlen(service.keys.dead_letter_queue_key())
-    }
+@job_router.post("/cancel/{job_id}", response_model=JobModel)
+async def cancel_job(job_id: str, redis_client: RedisCluster = Depends(get_redis_client)):
+    """
+    Cancel a job by its ID.
+    """
+    try:
+        job_service = JobQueueService(client=redis_client)
+        job_response = await job_service.cancel_job(job_id)
+        return job_response
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    # Handle specific exceptions as needed
 
-@job_router.get("/metrics/workers")
-async def get_worker_metrics(redis: RedisCluster = Depends(get_redis_client)):
-    keys = RedisKeyManager(system_prefix=settings.QUEUE_NAME)
-    return {
-        "active_workers": await redis.scard(keys.active_workers),
-        "stale_workers": await redis.zcount(
-            keys.worker_heartbeats, 
-            "-inf", 
-            datetime.now().timestamp() - 30  # 30s threshold
-        )
-    }

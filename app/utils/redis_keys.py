@@ -33,3 +33,11 @@ class RedisKeyManager:
         return f"{self.system_prefix}:dead_letter_queue"
     def processing_queue_key(self) -> str:
         return f"{self.system_prefix}:processing_queue"
+    
+    def active_workers_key(self) -> str:
+        return f"{self.system_prefix}:active_workers"
+    def worker_heartbeats(self) -> str:
+        return f"{self.system_prefix}:worker_heartbeats"
+    
+    def job_results_key(self) -> str:
+        return f"{self.system_prefix}:job_results"

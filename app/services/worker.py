@@ -1,13 +1,13 @@
 import asyncio
-from datetime import datetime, timedelta, timezone, tzinfo
+from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID
 import logging
-from fastapi import Depends, HTTPException
+from fastapi import HTTPException
 from redis.asyncio import RedisCluster
 from app.core.dependencies import get_redis_client
 from app.models.schemas import JobModel, JobUpdate, JobResult, Worker
-from app.models.enums import JobStatus, PriorityLevel
+from app.models.enums import JobStatus
 from app.core.config import settings
 from app.utils.redis_keys import RedisKeyManager
 from app.utils.redis_ops import execute_pipeline
@@ -40,7 +40,7 @@ class WorkerService:
                 self.keys.worker_heartbeats(),
                 {self.worker_id: datetime.now(timezone.utc).timestamp()}
             )
-            pipe.sadd(self.keys.active_workers(), self.worker_id)
+            pipe.sadd(self.keys.active_workers_key(), self.worker_id)
             return {
                 "message": "Worker registered",
                 "worker_id": self.worker_id,
@@ -53,7 +53,7 @@ class WorkerService:
             raise HTTPException(status_code=400, detail="Worker not registered")
 
         def pipeline_operations(pipe):
-            pipe.srem(self.keys.active_workers(), self.worker_id)
+            pipe.srem(self.keys.active_workers_key(), self.worker_id)
             pipe.zrem(self.keys.worker_heartbeats(), self.worker_id)
             self.logger.info(f"Worker {self.worker_id} deregistered.")
 
@@ -107,6 +107,41 @@ class WorkerService:
                 await asyncio.sleep(1)
                 dep = await self.job_queue_service.get_job(dep.job_id)
         return True
+    
+    async def _process_job(self, job: JobModel) -> JobResult:
+        try:
+            # Simulate job processing
+            for i in range(10):
+                await asyncio.sleep(1)  # Simulate work
+                self.logger.info(f"Processing job {job.job_id}...\nProgress {(i + 1) * 10}%")
+                if job.status == JobStatus.cancelled:
+                    self.logger.info(f"Job {job.job_id} cancelled. Exiting...")
+                    await self.job_queue_service.update_job(
+                        job.job_id,
+                        JobUpdate(status=JobStatus.cancelled)
+                    )
+                    return JobResult(job_id=job.job_id, status=JobStatus.cancelled)
+                elif job.status == JobStatus.failed:
+                    self.logger.error(f"Job {job.job_id} failed. Exiting...")
+                    await self.job_queue_service.update_job(
+                        job.job_id,
+                        JobUpdate(status=JobStatus.failed)
+                    )
+                    return JobResult(job_id=job.job_id, status=JobStatus.failed)
+                # asyncio.sleep(1)
+            await self.job_queue_service.update_job(
+                job.job_id,
+                JobUpdate(status=JobStatus.completed)
+            )
+            
+            return JobResult(status=JobStatus.completed)
+
+        except Exception as e:
+            await self.job_queue_service.update_job(
+                job.job_id,
+                JobUpdate(status=JobStatus.failed, error_message=str(e))
+            )
+            return JobResult(job_id=job.job_id, status=JobStatus.failed, error_message=str(e))
 
     async def process_next_job(self) -> tuple[bool, JobResult]:
         job = await self.job_queue_service.dequeue_job()
@@ -114,42 +149,33 @@ class WorkerService:
             return False, JobResult(status=JobStatus.failed, error_message="No jobs")
 
         try:
+            if job.retry_count >= job.max_retries:
+                await self.job_queue_service.move_to_dlq(job)
+                await self.job_queue_service.store_job_result(job.job_id, result=JobResult(status=JobStatus.failed, error_message="Max retries exceeded").model_dump())
+                return False, JobResult(status=JobStatus.failed, error_message="Max retries exceeded")
             # Check dependencies
             if not await self._check_dependencies(job):
                 return False, JobResult(job_id=job.job_id, status=JobStatus.cancelled)
 
-            # Process job
-            for i in range(10):
-
-                await asyncio.sleep(1)  # Simulate work
-                self.logger.info(f"Processing job {job.job_id}...\nProgress {(i + 1) * 10}%")
-                if job.status == JobStatus.cancelled:
-                    self.logger.info(f"Job {job.job_id} cancelled. Exiting...")
-                    await self.job_queue_service.update_job(
-                        job.job_id, 
-                        JobUpdate(status=JobStatus.cancelled)
-                    )
-                    return False, JobResult(job_id=job.job_id, status=JobStatus.cancelled)
-                elif job.status == JobStatus.failed:
-                    self.logger.error(f"Job {job.job_id} failed. Exiting...")
-                    await self.job_queue_service.update_job(
-                        job.job_id, 
-                        JobUpdate(status=JobStatus.failed)
-                    )
-                    return False, JobResult(job_id=job.job_id, status=JobStatus.failed)
-                # asyncio.sleep(1)
-            await self.job_queue_service.update_job(
-                job.job_id, 
-                JobUpdate(status=JobStatus.completed)
-            )
-            return True, JobResult(job_id=job.job_id, status=JobStatus.completed)
-        
+            for attempt in range(job.max_retries):
+                try:
+                    result = await self._process_job(job)
+                    await self.job_queue_service.store_job_result(job.job_id, result=result.model_dump())
+                    return True, JobResult(status=JobStatus.completed)
+                except Exception as e:
+                    job.retry_count += 1
+                    await self.job_queue_service.update_job(job.job_id, JobUpdate(
+                        status=JobStatus.retrying,
+                        retry_count=job.retry_count,
+                        error_message=f"Attempt {attempt+1} failed: {str(e)}"
+                    ))
+            result = JobResult(status=JobStatus.failed, error_message="Max retries exceeded")
+            await self.job_queue_service.move_to_dlq(job)
+            await self.job_queue_service.store_job_result(job.job_id, result=result.model_dump())
+            return False, result
         except Exception as e:
-            await self.job_queue_service.update_job(
-                job.job_id, 
-                JobUpdate(status=JobStatus.failed, error_message=str(e))
-            )
-            return False, JobResult(job_id=job.job_id, status=JobStatus.failed, error_message=str(e))
+            self.logger.error(f"Error processing job: {e}")
+            return False, JobResult(status=JobStatus.failed, error_message=str(e))
 
     async def run(self):
         try:

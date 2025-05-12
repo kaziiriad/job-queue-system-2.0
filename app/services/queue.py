@@ -1,16 +1,12 @@
-from datetime import datetime
 import json
 from typing import List, Optional
 from fastapi import HTTPException
-from pydantic import ValidationError
 from ..models.schemas import JobCreate, JobModel, JobUpdate
 from ..models.enums import JobStatus, PriorityLevel
 from ..core.config import settings
 from ..utils.redis_ops import execute_pipeline
 from ..utils.redis_keys import RedisKeyManager
-from collections import defaultdict
 import logging
-from uuid import UUID, uuid4
 
 logger = logging.getLogger(__name__)
 
@@ -173,3 +169,26 @@ class JobQueueService:
             return True
 
         return await execute_pipeline(self.redis_client, pipeline_operations)
+    async def move_to_dlq(self, job_id: str) -> bool:
+        job = await self.get_job(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+
+        def pipeline_operations(pipe):
+            new_job = JobModel.from_jobupdate(JobUpdate(status=JobStatus.failed), job)
+            pipe.hset(
+                self.keys.dead_letter_queue_key(),
+                job_id,
+                new_job.model_dump_json()
+            )
+            pipe.hdel(self.queue_name, job_id)
+            return True
+
+        return await execute_pipeline(self.redis_client, pipeline_operations)
+    
+    async def store_job_result(self, job_id: str, result: dict):
+        await self.redis_client.hset(
+            self.keys.job_results_key(),
+            job_id,
+            json.dumps(result)
+        )
