@@ -11,6 +11,7 @@ A distributed job queue system built with FastAPI, Redis, and Docker. This syste
 - **Fault Tolerance**: Automatic retry mechanism and dead-letter queue for failed jobs
 - **Dependency Management**: Define job dependencies to ensure proper execution order
 
+
 ## Architecture
 
 The system consists of four main components:
@@ -48,8 +49,12 @@ The system consists of four main components:
    ```
 
 4. **Access the application**:
+   - Home: http://localhost:8000/
+    <!-- ![Home Page](image-home.png) -->
    - Dashboard: http://localhost:8000/dashboard/
+    <!-- ![Metrics Dashboard](image-dashboard.png) -->
    - Job Management: http://localhost:8000/jobs/manage
+    <!-- ![Job Creation Interface](image-job-create.png) -->
    - API Documentation: http://localhost:8000/docs
 
 ### Production Setup with Docker Swarm
