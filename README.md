@@ -2,6 +2,8 @@
 
 A distributed job queue system built with FastAPI, Redis, and Docker. This system allows you to create, manage, and monitor jobs with different priority levels, dependencies, and automatic worker scaling.
 
+*Note: This is the second implementation (version 2.0) of the distributed job queue system. The original implementation (version 1.0) can be found at [https://github.com/kaziiriad/job-queue-system](https://github.com/kaziiriad/job-queue-system).*
+
 ## Features
 
 - **Job Queue Management**: Create, cancel, and monitor jobs with different priority levels
