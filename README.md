@@ -23,6 +23,58 @@ The system consists of four main components:
 3. **Monitor Service**: Monitors queue health and scales workers as needed
 4. **Redis**: Used as the message broker and for storing job metadata
 
+```mermaid
+
+flowchart LR
+    subgraph User Interface
+        A1[Web Browser]
+    end
+
+    subgraph API Service
+        B1[FastAPI App]
+        B2[Jinja2 Templates]
+    end
+
+    subgraph Worker Service
+        C1[Worker Process 1]
+        C2[Worker Process 2]
+        C3[Worker Process N]
+    end
+
+    subgraph Monitor Service
+        D1[Monitor Service]
+    end
+
+    subgraph Redis
+        E1[Job Queues]
+        E2[Job Metadata]
+        E3[Dead Letter Queue]
+        E4[Worker Heartbeats]
+    end
+
+    A1 -- HTTP Requests --> B1
+    B1 -- Renders --> B2
+    B1 -- Publishes Jobs --> E1
+    C1 -- Fetches Jobs --> E1
+    C2 -- Fetches Jobs --> E1
+    C3 -- Fetches Jobs --> E1
+    C1 -- Updates Status --> E2
+    C2 -- Updates Status --> E2
+    C3 -- Updates Status --> E2
+    C1 -- Failed Jobs --> E3
+    C2 -- Failed Jobs --> E3
+    C3 -- Failed Jobs --> E3
+    C1 -- Heartbeat --> E4
+    C2 -- Heartbeat --> E4
+    C3 -- Heartbeat --> E4
+    D1 -- Monitors --> E1
+    D1 -- Monitors --> E4
+    D1 -- Scales Workers --> C1
+    D1 -- Scales Workers --> C2
+    D1 -- Scales Workers --> C3
+
+```
+
 ## Prerequisites
 
 - Docker and Docker Compose
