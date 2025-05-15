@@ -3,6 +3,9 @@ version: '3.8'
 services:
   redis:
       image: redis
+      deploy:
+        labels:
+          com.docker.stack.namespace: "job-queue-system"  # Add this label
       ports:
         - "6379:6379"
       volumes:
@@ -10,6 +13,10 @@ services:
         
   job_api:
     image: localhost:5000/job-queue-api:latest  # Use pre-built image instead of build directive
+    deploy:
+      labels:
+        com.docker.stack.namespace: "job-queue-system"  # Add this label
+
     ports:
       - "8000:8000"
     environment:
@@ -21,6 +28,7 @@ services:
 
   worker:
     image: localhost:5000/job-queue-worker:latest  # Use pre-built image instead of build directive
+    
     environment:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
@@ -29,6 +37,8 @@ services:
       - redis
       - job_api
     deploy:  # Add deployment configuration for scaling
+      labels:
+        com.docker.stack.namespace: "job-queue-system"  # Add this label
       replicas: 1
       update_config:
         parallelism: 1
@@ -38,6 +48,9 @@ services:
     
   monitor:
     image: localhost:5000/job-queue-monitor:latest  # Use pre-built image instead of build directive
+    deploy:
+      labels:
+        com.docker.stack.namespace: "job-queue-system"  # Add this label
     environment:
       - REDIS_HOST=redis
       - REDIS_PORT=6379

@@ -32,6 +32,7 @@ class JobQueueService:
                 new_job.model_dump_json()
             )
             pipe.lpush(self.keys.priority_queue(priority), job_id)  # Add job to the priority-specific processing queue            
+            pipe.publish(f"{self.queue_name}:new_job", job_id)
             for dep in dependencies:
                 pipe.sadd(self.keys.dependencies_key(job_id), dep)
                 pipe.sadd(self.keys.dependents_key(dep), job_id)
