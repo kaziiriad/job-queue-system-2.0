@@ -106,6 +106,27 @@ class JobQueueService:
             logger.error(f"Error getting job {job_id}: {e}")
             raise HTTPException(status_code=500, detail=f"Failed to get job: {str(e)}")
         
+    # async def update_job(self, job_id: str, job_update: JobUpdate) -> JobModel:
+    #     job = await self.get_job(job_id)
+    #     if not job:
+    #         raise HTTPException(status_code=404, detail="Job not found")
+
+    #     updated_job = JobModel.from_jobupdate(job_update, job)
+
+    #     def pipeline_operations(pipe):
+    #         pipe.hset(
+    #             self.queue_name,
+    #             job_id,
+    #             updated_job.model_dump_json()
+    #         )
+    #         pipe.delete(self.keys.processing_queue_key(job_id))
+
+    #         if job_update.status == JobStatus.completed:
+    #             pipe.publish(f"{self.queue_name}:job_completed", job_id)
+    #         return updated_job
+
+    #     return await execute_pipeline(self.redis_client, pipeline_operations)
+        
     async def update_job(self, job_id: str, job_update: JobUpdate) -> JobModel:
         job = await self.get_job(job_id)
         if not job:
@@ -114,18 +135,59 @@ class JobQueueService:
         updated_job = JobModel.from_jobupdate(job_update, job)
 
         def pipeline_operations(pipe):
+            # Update the job in the main hash
             pipe.hset(
                 self.queue_name,
                 job_id,
                 updated_job.model_dump_json()
             )
-            pipe.delete(self.keys.processing_queue_key(job_id))
+            
+            # Remove from processing queue
+            pipe.lrem(self.keys.processing_queue(), 0, job_id)
             
             if job_update.status == JobStatus.completed:
+                # Publish completion event
                 pipe.publish(f"{self.queue_name}:job_completed", job_id)
+                
+                # Store result if provided
+                # if hasattr(job_update, 'result') and job_update.result:
+                #     pipe.hset(
+                #         self.keys.job_results_key(),
+                #         job_id,
+                #         json.dumps(job_update.result)
+                #     )
+                    
+                # Optionally set expiration on the job data
+                # pipe.expire(f"{self.queue_name}:job:{job_id}", 86400)  # 24 hours
+                
+            elif job_update.status == JobStatus.failed:
+                # Publish failure event
+                pipe.publish(f"{self.queue_name}:job_failed", job_id)
+                
+                # Store error information
+                if job_update.error_message:
+                    pipe.hset(
+                        self.keys.job_errors_key(),
+                        job_id,
+                        job_update.error_message
+                    )
+                
+                # If retries are exhausted, move to DLQ
+                if job.retry_count >= job.max_retries:
+                    pipe.hset(
+                        self.keys.dead_letter_queue_key(),
+                        job_id,
+                        updated_job.model_dump_json()
+                    )
+                    pipe.publish(f"{self.queue_name}:job_to_dlq", job_id)
+                else:
+                    # If retries not exhausted, the worker should handle requeuing
+                    pass
+            
             return updated_job
 
         return await execute_pipeline(self.redis_client, pipeline_operations)
+    
     
     async def delete_job(self, job_id: str) -> bool:
         job = await self.get_job(job_id)
