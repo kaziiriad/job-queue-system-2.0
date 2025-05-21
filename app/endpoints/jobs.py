@@ -5,6 +5,7 @@ from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
 from typing import List, Optional
 import pathlib
+import logging
 from uuid import UUID
 from redis.asyncio import Redis
 from ..models.schemas import JobCreate, JobModel, JobUpdate
@@ -13,6 +14,9 @@ from ..services.queue import JobQueueService
 from ..core.dependencies import get_redis_client
 from ..core.config import settings
 from ..utils.redis_keys import RedisKeyManager
+
+# Set up logging
+logger = logging.getLogger(__name__)
 
 job_router = APIRouter(prefix="/jobs", tags=["Jobs"])
 
@@ -69,12 +73,23 @@ async def create_job(job_create: JobCreate, redis_client: Redis = Depends(get_re
     Create a new job in the queue.
     """
     try:
+        # Log the incoming job creation request
+        logger.debug(f"Creating job with data: {job_create.model_dump()}")
+        
         job_service = JobQueueService(client=redis_client)
         job_response = await job_service.enqueue_job(job_create)
+        
+        # Log successful job creation
+        logger.info(f"Successfully created job with ID: {job_response.job_id}")
+        
         return job_response
     except ValidationError as e:
+        # Log validation errors
+        logger.error(f"Validation error creating job: {str(e)}")
         raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
+        # Log other errors
+        logger.error(f"Error creating job: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @job_router.get("/{job_id}", response_model=JobModel)

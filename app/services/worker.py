@@ -35,7 +35,7 @@ class WorkerService:
         self.empty_threshold = 3  # Number of consecutive empty jobs before starting backoff
         
         # Event to wake up worker when new job is available
-        self.new_job_event = asyncio.Event()
+        self._notification_event = asyncio.Event()
 
     async def register_worker(self) -> Optional[dict]:
         # Fix: Use uuid.uuid4() to generate a random UUID
@@ -64,14 +64,25 @@ class WorkerService:
         # return self.worker
     
     async def deregister_worker(self):
+        """
+        Deregister the worker from the system.
+        """
         if not self.worker_id:
             raise HTTPException(status_code=400, detail="Worker not registered")
 
+        # First, unsubscribe from the pub/sub channel if we have a pubsub object
+        if hasattr(self, 'pubsub') and self.pubsub:
+            try:
+                await self.pubsub.unsubscribe(f"{self.queue_name}:new_job")
+                await self.pubsub.close()
+                self.logger.info("Unsubscribed from new job notifications")
+            except Exception as e:
+                self.logger.warning(f"Error unsubscribing from pub/sub: {e}")
+
+        # Then remove worker from active workers and heartbeats
         def pipeline_operations(pipe):
             pipe.srem(self.keys.active_workers_key(), self.worker_id)
             pipe.zrem(self.keys.worker_heartbeats(), self.worker_id)
-            pipe.unsubscribe(f"{self.queue_name}:new_job")
-
             self.logger.info(f"Worker {self.worker_id} deregistered.")
 
         await execute_pipeline(self.redis_client, pipeline_operations)
@@ -201,73 +212,108 @@ class WorkerService:
             self.logger.error(f"Error processing job: {e}")
             return False, JobResult(status=JobStatus.failed, error_message=str(e))
     
-    async def _job_listener_task(self):
-        """Listen for new job notifications via Redis pub/sub"""
-        pubsub = self.redis_client.pubsub()
-        await pubsub.subscribe(f"{self.queue_name}:new_job")
+    async def _wait_for_notification(self):
+        """
+        Wait for a new job notification.
+        """
+        # This future will be set when a new job notification is received
+        if not hasattr(self, '_notification_event'):
+            self._notification_event = asyncio.Event()
         
-        self.logger.info(f"Worker {self.worker_id} listening for new jobs on {self.queue_name}:new_job")
+        # Wait for the event to be set
+        await self._notification_event.wait()
         
+        # Clear the event for next time
+        self._notification_event.clear()
+
+    async def _listen_for_new_jobs(self):
+        """
+        Listen for new job notifications via Redis pub/sub.
+        """
         try:
-            async for message in pubsub.listen():
-                if message['type'] == 'message':
+            while True:
+                message = await self.pubsub.get_message(ignore_subscribe_messages=True)
+                if message and message['type'] == 'message':
                     self.logger.debug(f"Received job notification: {message}")
-                    # Wake up the worker
-                    self.new_job_event.set()
+                    # Set the event to wake up the worker
+                    if hasattr(self, '_notification_event'):
+                        self._notification_event.set()
+                await asyncio.sleep(0.1)  # Short sleep to avoid tight loop
         except Exception as e:
-            self.logger.error(f"Error in job listener: {e}")
+            self.logger.error(f"Error in pub/sub listener: {e}")
         finally:
-            await pubsub.unsubscribe(f"{self.queue_name}:new_job")
+            # Make sure to close the pubsub connection
+            try:
+                if hasattr(self, 'pubsub') and self.pubsub:
+                    await self.pubsub.unsubscribe(f"{self.queue_name}:new_job")
+                    await self.pubsub.close()
+            except Exception as e:
+                self.logger.error(f"Error closing pubsub: {e}")
 
     async def run(self):
+        """
+        Run the worker to process jobs from the queue.
+        """
         try:
             await self.register_worker()
+            
+            # Create heartbeat task
             heartbeat_task = asyncio.create_task(self._heartbeat_task())
-            # Start job listener task
-            job_listener_task = asyncio.create_task(self._job_listener_task())
+            
+            # Set up pub/sub for new job notifications
+            self.pubsub = self.redis_client.pubsub()
+            await self.pubsub.subscribe(f"{self.queue_name}:new_job")
+            self.logger.info(f"Worker {self.worker_id} listening for new jobs on {self.queue_name}:new_job")
+            
+            # Create pub/sub listener task
+            pubsub_task = asyncio.create_task(self._listen_for_new_jobs())
+            
+            # Initial sleep time
+            sleep_time = 1.0
+            max_sleep_time = self.max_backoff
+            
             while True:
                 success, result = await self.process_next_job()
-                if not success and result.error_message == "No jobs available to process":
-                    if self.consecutive_empty_jobs > self.empty_threshold:
-                        # Calculate backoff with exponential increase (capped at max_backoff)
-                        sleep_time = min(self.current_backoff, self.max_backoff)
-                        self.logger.info(f"No jobs available. Sleeping for {sleep_time} seconds.")
-                        
-                        # Either wait for the backoff time or until a new job notification
-                        try:
-                            # Clear any previous event triggers
-                            self.new_job_event.clear()
-                            # Wait for either the timeout or the event to be set
-                            await asyncio.wait_for(self.new_job_event.wait(), timeout=sleep_time)
-                            self.logger.info("Woken up by new job notification")
-                        except asyncio.TimeoutError:
-                            # Timeout occurred (expected), continue processing
-                            pass
-                        
-                        # Increase backoff for next time if we reach this point
-                        self.current_backoff = min(self.current_backoff * 2, self.max_backoff)
-                    else:
-                        # Short sleep before the backoff threshold is reached
-                        await asyncio.sleep(0.1)
-                elif not success:
-                    self.logger.info(f"Job processing failed: {result.error_message}")
-                    await asyncio.sleep(0.1)  # Short pause
+                
+                if success:
+                    # Reset sleep time on successful job processing
+                    sleep_time = 1.0
+                    self.logger.info(f"Processed job successfully: {result.status}")
                 else:
-                    # Job processed successfully
-                    await asyncio.sleep(0.1)  # Short pause
-                    
-
+                    if "No jobs available to process" in result.error_message:
+                        if self.consecutive_empty_jobs > self.empty_threshold:
+                            # Use exponential backoff when no jobs are available
+                            self.logger.info(f"No jobs available. Sleeping for {sleep_time}s")
+                            
+                            # Wait for either the sleep time or a new job notification
+                            try:
+                                await asyncio.wait_for(self._wait_for_notification(), timeout=sleep_time)
+                                # If we get here, we were notified of a new job
+                                sleep_time = 1.0  # Reset sleep time
+                                self.logger.info("Woken up by new job notification")
+                            except asyncio.TimeoutError:
+                                # No notification received, increase sleep time
+                                sleep_time = min(sleep_time * 2, max_sleep_time)
+                        else:
+                            # Short sleep before the backoff threshold is reached
+                            await asyncio.sleep(0.1)
+                    else:
+                        # For other errors, log them but don't increase sleep time
+                        self.logger.error(f"Job processing error: {result.error_message}")
+                        await asyncio.sleep(1)  # Short sleep before retry
         except asyncio.CancelledError:
             self.logger.info("Worker received cancellation signal")
-
-            heartbeat_task.cancel()
-            job_listener_task.cancel()
-
-            await self.deregister_worker()
-
         except Exception as e:
             self.logger.error(f"Worker failed: {e}")
-            if self.worker_id:  # Only try to deregister if we have a worker_id
+        finally:
+            # Clean up tasks and connections
+            if 'heartbeat_task' in locals():
+                heartbeat_task.cancel()
+            if 'pubsub_task' in locals():
+                pubsub_task.cancel()
+            
+            # Deregister worker
+            if self.worker_id:
                 await self.deregister_worker()
 
 

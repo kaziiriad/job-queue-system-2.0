@@ -18,53 +18,93 @@ class JobQueueService:
         self.queue_name = queue_name
         self.keys = RedisKeyManager(system_prefix=queue_name)
 
-    async def enqueue_job(self, job: JobCreate) -> dict:
-        new_job = JobModel.from_jobcreate(job)
-        job_id = new_job.job_id
-        priority = new_job.priority
-        dependencies = new_job.dependencies or []
-        
-        def pipeline_operations(pipe):
-            # Convert the Pydantic model to JSON string
-            pipe.hset(
-                self.queue_name,
-                job_id,
-                new_job.model_dump_json()
-            )
-            pipe.lpush(self.keys.priority_queue(priority), job_id)  # Add job to the priority-specific processing queue            
-            pipe.publish(f"{self.queue_name}:new_job", job_id)
-            for dep in dependencies:
-                pipe.sadd(self.keys.dependencies_key(job_id), dep)
-                pipe.sadd(self.keys.dependents_key(dep), job_id)
+    async def enqueue_job(self, job: JobCreate) -> JobModel:
+        """
+        Create a new job and add it to the appropriate priority queue.
+        """
+        try:
+            # Create a new JobModel from JobCreate
+            new_job = JobModel.from_jobcreate(job)
+            job_id = new_job.job_id
+            priority = new_job.priority
+            dependencies = new_job.dependencies or []
             
-            return {
-                "message": "Job added to the queue",
-                "job_id": job_id,
-                "priority": priority.value,
-            }
+            logger.debug(f"Created job: {new_job.model_dump()}")
+            
+            def pipeline_operations(pipe):
+                # Store the complete job data
+                pipe.hset(
+                    self.queue_name,
+                    job_id,
+                    new_job.model_dump_json()
+                )
+                
+                # Add job to the priority-specific processing queue
+                pipe.lpush(self.keys.priority_queue(priority), job_id)
+                
+                # Notify about new job
+                pipe.publish(f"{self.queue_name}:new_job", job_id)
+                
+                # Handle dependencies
+                for dep in dependencies:
+                    pipe.sadd(self.keys.job_dependencies_key(job_id), dep)
+                    pipe.sadd(self.keys.job_dependents_key(dep), job_id)
+                
+                return new_job
 
-        return await execute_pipeline(self.redis_client, pipeline_operations)
+            return await execute_pipeline(self.redis_client, pipeline_operations)
+        except Exception as e:
+            logger.error(f"Error enqueueing job: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to enqueue job: {str(e)}")
     
     async def dequeue_job(self) -> Optional[JobModel]:
-        # Dequeue a job from the queue by priority
-        for priority in [PriorityLevel.high, PriorityLevel.normal, PriorityLevel.low]:
-            processing_queue = self.keys.processing_queue_key()
-            job_id = await self.redis_client.brpoplpush(
-                self.keys.priority_queue(priority),
-                processing_queue,
-                timeout=1  # Block for 1 second
-            )
+        """
+        Dequeue a job from the queue by priority.
+        """
+        try:
+            for priority in [PriorityLevel.high, PriorityLevel.normal, PriorityLevel.low]:
+                processing_queue = self.keys.processing_queue_key()
+                job_id = await self.redis_client.brpoplpush(
+                    self.keys.priority_queue(priority),
+                    processing_queue,
+                    timeout=1  # Block for 1 second
+                )
 
-            if job_id:
-                job_json = await self.redis_client.hget(self.queue_name, job_id)
-                if job_json:
-                    return JobModel.model_validate_json(job_json.decode('utf-8'))
-        return None
+                if job_id:
+                    # Handle both bytes and string job_id
+                    if isinstance(job_id, bytes):
+                        job_id = job_id.decode('utf-8')
+                    
+                    job_json = await self.redis_client.hget(self.queue_name, job_id)
+                    if job_json:
+                        # Handle both bytes and string job_json
+                        if isinstance(job_json, bytes):
+                            job_json = job_json.decode('utf-8')
+                        
+                        return JobModel.model_validate_json(job_json)
+            return None
+        except Exception as e:
+            logger.error(f"Error dequeuing job: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to dequeue job: {str(e)}")
 
     async def get_job(self, job_id: str) -> Optional[JobModel]:
-        job_json = await self.redis_client.hget(self.queue_name, job_id)
-
-        return JobModel.model_validate_json(job_json) if job_json else None
+        """
+        Get a job by its ID.
+        """
+        try:
+            job_json = await self.redis_client.hget(self.queue_name, job_id)
+            
+            if not job_json:
+                return None
+                
+            # Handle both bytes and string job data
+            if isinstance(job_json, bytes):
+                job_json = job_json.decode('utf-8')
+                
+            return JobModel.model_validate_json(job_json)
+        except Exception as e:
+            logger.error(f"Error getting job {job_id}: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to get job: {str(e)}")
         
     async def update_job(self, job_id: str, job_update: JobUpdate) -> JobModel:
         job = await self.get_job(job_id)
@@ -79,6 +119,10 @@ class JobQueueService:
                 job_id,
                 updated_job.model_dump_json()
             )
+            pipe.delete(self.keys.processing_queue_key(job_id))
+            
+            if job_update.status == JobStatus.completed:
+                pipe.publish(f"{self.queue_name}:job_completed", job_id)
             return updated_job
 
         return await execute_pipeline(self.redis_client, pipeline_operations)
@@ -90,14 +134,14 @@ class JobQueueService:
 
         def pipeline_operations(pipe):
             pipe.hdel(self.queue_name, job_id)
-            pipe.delete(self.keys.dependencies_key(job_id))
-            pipe.delete(self.keys.dependents_key(job_id))
+            pipe.delete(self.keys.job_dependencies_key(job_id))
+            pipe.delete(self.keys.job_dependents_key(job_id))
             return True
 
         return await execute_pipeline(self.redis_client, pipeline_operations)
     
     async def get_job_dependencies(self, job_id: str) -> List[JobModel]:
-        dependencies = await self.redis_client.smembers(self.keys.dependencies_key(job_id))
+        dependencies = await self.redis_client.smembers(self.keys.job_dependencies_key(job_id))
 
         if not dependencies:
             return []
@@ -123,13 +167,24 @@ class JobQueueService:
         return jobs
     
     async def get_all_jobs(self) -> List[JobModel]:
-        job_ids = await self.redis_client.hkeys(self.queue_name)
-        jobs = []
-        for job_id in job_ids:
-            job = await self.get_job(job_id.decode('utf-8'))
-            if job:
-                jobs.append(job)
-        return jobs
+        """
+        Get all jobs from the queue.
+        """
+        try:
+            job_ids = await self.redis_client.hkeys(self.queue_name)
+            jobs = []
+            for job_id in job_ids:
+                # Handle both bytes and string job_ids
+                if isinstance(job_id, bytes):
+                    job_id = job_id.decode('utf-8')
+                
+                job = await self.get_job(job_id)
+                if job:
+                    jobs.append(job)
+            return jobs
+        except Exception as e:
+            logger.error(f"Error getting all jobs: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to get jobs: {str(e)}")
     
     async def get_job_status(self, job_id: str) -> JobStatus:
         job = await self.get_job(job_id)

@@ -48,12 +48,19 @@ class JobModel(BaseModel):
 
     @classmethod
     def from_jobcreate(cls, job_create: JobCreate) -> 'JobModel':
-        return cls(
-            job_id=str(uuid.uuid4()),
-            priority=job_create.priority,
-            dependencies=job_create.dependencies,
-            max_retries=job_create.max_retries,
-        )
+        """Create a JobModel from a JobCreate instance."""
+        # Create a dictionary from the JobCreate model
+        job_data = job_create.model_dump()
+        
+        # Add the job_id field
+        job_data['job_id'] = str(uuid.uuid4())
+        
+        # Set default values for fields not in JobCreate
+        job_data['created_at'] = datetime.now()
+        job_data['retry_count'] = 0
+        
+        # Create and return the JobModel
+        return cls(**job_data)
 
     @classmethod
     def from_jobupdate(cls, job_update: JobUpdate, existing_job: 'JobModel') -> 'JobModel':
