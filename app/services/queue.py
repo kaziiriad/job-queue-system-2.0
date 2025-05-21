@@ -143,7 +143,7 @@ class JobQueueService:
             )
             
             # Remove from processing queue
-            pipe.lrem(self.keys.processing_queue(), 0, job_id)
+            pipe.lrem(self.keys.processing_queue_key(), 0, job_id)
             
             if job_update.status == JobStatus.completed:
                 # Publish completion event
@@ -188,7 +188,7 @@ class JobQueueService:
 
         return await execute_pipeline(self.redis_client, pipeline_operations)
     
-    
+
     async def delete_job(self, job_id: str) -> bool:
         job = await self.get_job(job_id)
         if not job:
@@ -203,30 +203,51 @@ class JobQueueService:
         return await execute_pipeline(self.redis_client, pipeline_operations)
     
     async def get_job_dependencies(self, job_id: str) -> List[JobModel]:
-        dependencies = await self.redis_client.smembers(self.keys.job_dependencies_key(job_id))
+        """
+        Get all dependencies for a job.
+        """
+        try:
+            dependencies = await self.redis_client.smembers(self.keys.job_dependencies_key(job_id))
 
-        if not dependencies:
-            return []
+            if not dependencies:
+                return []
 
-        jobs = []
-        for dep in dependencies:
-            dep_job = await self.get_job(dep.decode('utf-8'))
-            if dep_job:
-                jobs.append(dep_job)
+            jobs = []
+            for dep in dependencies:
+                # Handle both bytes and string dependency IDs
+                dep_id = dep.decode('utf-8') if isinstance(dep, bytes) else dep
+                
+                dep_job = await self.get_job(dep_id)
+                if dep_job:
+                    jobs.append(dep_job)
 
-        return jobs
+            return jobs
+        except Exception as e:
+            logger.error(f"Error getting job dependencies for {job_id}: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to get job dependencies: {str(e)}")
     async def get_job_dependents(self, job_id: str) -> List[JobModel]:
-        dependents = await self.redis_client.smembers(self.keys.dependents_key(job_id))
-        if not dependents:
-            return []
+        """
+        Get all jobs that depend on this job.
+        """
+        try:
+            dependents = await self.redis_client.smembers(self.keys.job_dependents_key(job_id))
             
-        jobs = []
-        for dep in dependents:
-            dep_job = await self.get_job(dep.decode('utf-8'))
-            if dep_job:
-                jobs.append(dep_job)
+            if not dependents:
+                return []
+                
+            jobs = []
+            for dep in dependents:
+                # Handle both bytes and string dependent IDs
+                dep_id = dep.decode('utf-8') if isinstance(dep, bytes) else dep
+                
+                dep_job = await self.get_job(dep_id)
+                if dep_job:
+                    jobs.append(dep_job)
 
-        return jobs
+            return jobs
+        except Exception as e:
+            logger.error(f"Error getting job dependents for {job_id}: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to get job dependents: {str(e)}")
     
     async def get_all_jobs(self) -> List[JobModel]:
         """

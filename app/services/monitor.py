@@ -88,7 +88,7 @@ class MonitorService:
             if not queue_metrics:
                 return
             
-            pending_jobs = queue_metrics.get("pending_high", 0) + queue_metrics.get("pending_normal", 0) + queue_metrics.get("pending_low", 0)
+            pending_jobs = queue_metrics.get("pending_high", 0) + queue_metrics.get("pending_normal", 0) + queue_metrics.get("pending_low", 0) 
             active_workers = await self.redis_client.scard(self.keys.active_workers_key())
             
             self.logger.info(f"Pending jobs: {pending_jobs}")

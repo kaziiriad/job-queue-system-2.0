@@ -88,7 +88,7 @@ if docker stack ls | grep -q "job-queue"; then
     echo "Previous stack removed successfully."
 fi
 echo "waiting for stack to be removed..."
-sleep 7
+sleep 15
 # Deploy the stack
 echo "Deploying job-queue stack..."
 docker stack deploy -c docker-compose.yml job-queue

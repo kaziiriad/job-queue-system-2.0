@@ -3,6 +3,8 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from datetime import datetime, timezone
 from redis.asyncio import Redis
+import json
+from typing import Dict, Any
 from ..core.dependencies import get_redis_client
 from ..models.enums import PriorityLevel
 from ..services.queue import JobQueueService
@@ -56,12 +58,34 @@ async def get_jobs_result(redis: Redis = Depends(get_redis_client)):
             # Handle both bytes and string keys/values
             key_str = key.decode("utf-8") if isinstance(key, bytes) else key
             value_str = value.decode("utf-8") if isinstance(value, bytes) else value
-            result_dict[key_str] = value_str
+            
+            # Try to parse the JSON
+            try:
+                parsed_value = json.loads(value_str)
+                result_dict[key_str] = {
+                    "raw": value_str,
+                    "parsed": parsed_value
+                }
+            except json.JSONDecodeError:
+                result_dict[key_str] = {
+                    "raw": value_str,
+                    "parsed": None
+                }
             
         return result_dict
     except Exception as e:
         logger.error(f"Error getting job results: {e}")
         return {}  # Return empty dict on error
+
+@dashboard_router.get("/metrics/all-jobs")
+async def get_all_jobs(redis: Redis = Depends(get_redis_client)):
+    try:
+        service = JobQueueService(redis)
+        jobs = await service.get_all_jobs()
+        return [job.model_dump() for job in jobs]
+    except Exception as e:
+        logger.error(f"Error getting all jobs: {e}")
+        return []
 
 @dashboard_router.get("/", response_class=HTMLResponse)
 async def dashboard_view(request: Request, 
@@ -79,6 +103,20 @@ async def dashboard_view(request: Request,
         # Get job results
         job_results = await get_jobs_result(redis)
         
+        # Get all jobs
+        all_jobs = await get_all_jobs(redis)
+        
+        # Create a job status lookup dictionary
+        job_status_lookup = {job["job_id"]: job["status"] for job in all_jobs}
+        
+        # Combine job results with job status
+        combined_job_data = {}
+        for job_id, result_data in job_results.items():
+            combined_job_data[job_id] = {
+                "result": result_data,
+                "status": job_status_lookup.get(job_id, "unknown")
+            }
+        
         # Format current time for display
         last_updated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         
@@ -90,7 +128,8 @@ async def dashboard_view(request: Request,
                 "queue_metrics": queue_metrics,
                 "worker_metrics": worker_metrics,
                 "last_updated": last_updated,
-                "job_results": job_results,
+                "job_results": combined_job_data,
+                "all_jobs": all_jobs
             }
         )
     except Exception as e:

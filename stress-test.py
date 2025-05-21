@@ -24,10 +24,13 @@ DEFAULT_PRIORITY_DISTRIBUTION = "30,50,20"  # high,normal,low in percentages
 DEFAULT_DEPENDENCY_PROBABILITY = 0.2  # 20% chance of having dependencies
 DEFAULT_MAX_DEPENDENCIES = 3
 DEFAULT_JOB_TITLE_PREFIX = "Stress Test Job"
+DEFAULT_MONITOR_INTERVAL = 5  # seconds
+DEFAULT_TIMEOUT = 300  # 5 minutes
 
 class JobQueueStressTester:
     def __init__(self, api_url, total_jobs, concurrency, priority_distribution, 
-                 dependency_probability, max_dependencies, job_title_prefix):
+                 dependency_probability, max_dependencies, job_title_prefix,
+                 monitor_interval=DEFAULT_MONITOR_INTERVAL, timeout=DEFAULT_TIMEOUT):
         self.api_url = api_url
         self.total_jobs = total_jobs
         self.concurrency = concurrency
@@ -35,6 +38,8 @@ class JobQueueStressTester:
         self.dependency_probability = dependency_probability
         self.max_dependencies = max_dependencies
         self.job_title_prefix = job_title_prefix
+        self.monitor_interval = monitor_interval
+        self.timeout = timeout
         
         self.created_jobs = []
         self.start_time = None
@@ -188,6 +193,65 @@ class JobQueueStressTester:
             
             await asyncio.sleep(5)  # Check every 5 seconds
     
+    async def wait_for_job_completion(self, session):
+        """Wait for all jobs to complete or timeout."""
+        logger.info(f"Waiting for jobs to complete (timeout: {self.timeout}s)...")
+        
+        start_wait_time = time.time()
+        progress_bar_length = 30
+        
+        while time.time() - start_wait_time < self.timeout:
+            # Check all job statuses
+            all_statuses = {}
+            for job_id in self.created_jobs:
+                status = await self.check_job_status(session, job_id)
+                if status not in all_statuses:
+                    all_statuses[status] = 0
+                all_statuses[status] += 1
+            
+            # Calculate completion percentage
+            completed = all_statuses.get("completed", 0)
+            failed = all_statuses.get("failed", 0)
+            total_done = completed + failed
+            completion_percentage = total_done / len(self.created_jobs) * 100 if self.created_jobs else 0
+            
+            # Display progress bar
+            elapsed = time.time() - start_wait_time
+            progress = int(progress_bar_length * completion_percentage / 100)
+            progress_bar = f"[{'#' * progress}{' ' * (progress_bar_length - progress)}]"
+            
+            logger.info(f"Job completion: {progress_bar} {completion_percentage:.1f}% ({total_done}/{len(self.created_jobs)}) - Elapsed: {elapsed:.1f}s")
+            logger.info(f"Status breakdown: {all_statuses}")
+            
+            # Check if all jobs are done
+            if total_done == len(self.created_jobs):
+                logger.info("All jobs have completed!")
+                break
+            
+            # Get queue metrics
+            queue_metrics = await self.monitor_queue_metrics(session)
+            if queue_metrics:
+                pending = queue_metrics.get('pending_high', 0) + queue_metrics.get('pending_normal', 0) + queue_metrics.get('pending_low', 0)
+                processing = queue_metrics.get('processing', 0)
+                logger.info(f"Queue status: {pending} pending, {processing} processing")
+            
+            # Wait before checking again
+            await asyncio.sleep(self.monitor_interval)
+        
+        # Check if we timed out
+        if time.time() - start_wait_time >= self.timeout:
+            logger.warning(f"Timeout reached after {self.timeout}s. Some jobs may not have completed.")
+        
+        # Final status check
+        final_statuses = {}
+        for job_id in self.created_jobs:
+            status = await self.check_job_status(session, job_id)
+            if status not in final_statuses:
+                final_statuses[status] = 0
+            final_statuses[status] += 1
+        
+        return final_statuses
+    
     async def create_jobs(self):
         """Create all jobs with the specified concurrency."""
         self.start_time = time.time()
@@ -214,24 +278,26 @@ class JobQueueStressTester:
             if tasks:
                 await asyncio.wait(tasks)
             
-            self.end_time = time.time()
+            logger.info(f"All {self.successful_jobs} jobs created successfully. Waiting for processing to complete...")
             
             # Wait a bit for monitoring to catch up
             await asyncio.sleep(2)
-            monitoring_task.cancel()
             
-            # Final check of all jobs
-            logger.info("Checking final status of all jobs...")
-            final_statuses = {}
-            for job_id in self.created_jobs:
-                status = await self.check_job_status(session, job_id)
-                if status not in final_statuses:
-                    final_statuses[status] = 0
-                final_statuses[status] += 1
+            # Cancel the monitoring task
+            monitoring_task.cancel()
+            try:
+                await monitoring_task
+            except asyncio.CancelledError:
+                pass
+            
+            # Wait for all jobs to complete
+            final_statuses = await self.wait_for_job_completion(session)
             
             # Get final metrics
             final_queue_metrics = await self.monitor_queue_metrics(session)
             final_worker_metrics = await self.monitor_worker_metrics(session)
+            
+            self.end_time = time.time()
             
             return final_statuses, final_queue_metrics, final_worker_metrics
     
@@ -291,6 +357,12 @@ async def main():
                         help=f"Maximum number of dependencies per job (default: {DEFAULT_MAX_DEPENDENCIES})")
     parser.add_argument("--job-prefix", default=DEFAULT_JOB_TITLE_PREFIX, 
                         help=f"Prefix for job titles (default: {DEFAULT_JOB_TITLE_PREFIX})")
+    parser.add_argument("--monitor-interval", type=int, default=DEFAULT_MONITOR_INTERVAL,
+                        help=f"Interval in seconds between job status checks (default: {DEFAULT_MONITOR_INTERVAL})")
+    parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT,
+                        help=f"Maximum time in seconds to wait for job completion (default: {DEFAULT_TIMEOUT})")
+    parser.add_argument("--no-wait", action="store_true",
+                        help="Don't wait for jobs to complete (exit after creation)")
     
     args = parser.parse_args()
     
@@ -301,7 +373,9 @@ async def main():
         priority_distribution=args.priority,
         dependency_probability=args.dependency_prob,
         max_dependencies=args.max_dependencies,
-        job_title_prefix=args.job_prefix
+        job_title_prefix=args.job_prefix,
+        monitor_interval=args.monitor_interval,
+        timeout=args.timeout
     )
     
     final_statuses, final_queue_metrics, final_worker_metrics = await tester.create_jobs()
