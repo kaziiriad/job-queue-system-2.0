@@ -41,3 +41,6 @@ class RedisKeyManager:
     
     def job_results_key(self) -> str:
         return f"{self.system_prefix}:job_results"
+    
+    def job_errors_key(self) -> str:
+        return f"{self.system_prefix}:job_errors"

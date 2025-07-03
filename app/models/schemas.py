@@ -1,6 +1,6 @@
 from datetime import datetime
 from typing import Optional, List, Dict
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, field_serializer
 import uuid
 
 from .enums import JobStatus, PriorityLevel
@@ -76,10 +76,11 @@ class JobModel(BaseModel):
         return cls(**updated_data)
     
         
-    class Config:
-        json_encoders = {
-            datetime: lambda v: v.isoformat(),
-        }
+
+    @field_serializer('created_at', 'updated_at')
+    def serialize_datetime(self, dt: datetime, _info):
+        return dt.isoformat() if dt else None
+
 
 class Worker(BaseModel):
     worker_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -90,6 +91,7 @@ class Worker(BaseModel):
     failed_jobs: int = 0
     start_time: datetime = Field(default_factory=lambda: datetime.now())
     status: Optional[str] = None
-    class Config:
-        populate_by_name = True
-        validate_assignment = True
+    model_config = {
+        "populate_by_name": True,
+        "validate_assignment": True,
+    }

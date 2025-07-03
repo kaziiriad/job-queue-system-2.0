@@ -15,3 +15,14 @@ dependencies = [
     "redis>=6.0.0",
     "uvicorn>=0.34.2",
 ]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "fakeredis",
+    "pytest-asyncio",
+    "httpx",
+]
+
+[tool.setuptools]
+packages = ["app"]

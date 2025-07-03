@@ -180,6 +180,7 @@ class JobQueueService:
                         updated_job.model_dump_json()
                     )
                     pipe.publish(f"{self.queue_name}:job_to_dlq", job_id)
+                    pipe.hdel(self.queue_name, job_id)
                 else:
                     # If retries not exhausted, the worker should handle requeuing
                     pass
