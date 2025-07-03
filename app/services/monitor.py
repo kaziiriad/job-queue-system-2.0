@@ -11,7 +11,11 @@ from redis.asyncio import Redis
 import logging
 import aiohttp
 import sys
+from app.services.queue import JobQueueService
 
+
+from app.models.enums import JobStatus
+from app.models.schemas import JobModel
 
 class MonitorService:
     def __init__(self, client: Redis, queue_name: str = settings.QUEUE_NAME, *args, **kwargs):
@@ -21,6 +25,9 @@ class MonitorService:
         self.logger = logging.getLogger(__name__)
         self.worker_heartbeat_timeout = kwargs.get('worker_heartbeat_timeout', 30)
         self.worker_scale_threshold = kwargs.get('worker_scale_threshold', 10)
+        self.scale_cooldown_seconds = kwargs.get('scale_cooldown_seconds', 60) # Default to 60 seconds
+        self.last_scale_action_time = datetime.now(timezone.utc)
+        self.queue_service = JobQueueService(client=self.redis_client, queue_name=self.queue_name)
         
         # Initialize Docker client with error handling
         self.docker_client = None
@@ -46,6 +53,12 @@ class MonitorService:
             except Exception as e:
                 self.logger.warning(f"Failed to initialize AWS session: {e}")
                 self.logger.warning("Worker scaling with AWS will be disabled")
+
+    async def get_job_status(self, job_id: str) -> JobStatus:
+        job = await self.queue_service.get_job(job_id)
+        if not job:
+            return JobStatus.not_found
+        return job.status
 
     async def check_stale_workers(self) -> list[str]:
         current_time = datetime.now(timezone.utc).timestamp()
@@ -94,14 +107,24 @@ class MonitorService:
             self.logger.info(f"Pending jobs: {pending_jobs}")
             self.logger.info(f"Active workers: {active_workers}")
         
-            if pending_jobs > self.worker_scale_threshold:
+            if active_workers == 0 and pending_jobs > 0:
+                self.logger.info("No active workers but pending jobs exist. Scaling up.")
                 await self._scale_up_worker()
-            elif pending_jobs < self.worker_scale_threshold // 2:
-                await self._scale_down_worker()
+            elif active_workers > 0:
+                jobs_per_worker = pending_jobs // active_workers
+                self.logger.info(f"Jobs per active worker: {jobs_per_worker}")
+                if jobs_per_worker > self.worker_scale_threshold:
+                    await self._scale_up_worker()
+                elif jobs_per_worker < self.worker_scale_threshold // 2:
+                    await self._scale_down_worker()
         except Exception as e:
             self.logger.error(f"Error scaling workers: {e}")
     
     async def _scale_up_worker(self):
+        if (datetime.now(timezone.utc) - self.last_scale_action_time).total_seconds() < self.scale_cooldown_seconds:
+            self.logger.info(f"Scaling up skipped due to cooldown. Remaining: {self.scale_cooldown_seconds - (datetime.now(timezone.utc) - self.last_scale_action_time).total_seconds():.2f}s")
+            return
+
         if settings.RUNNING_IN_CLOUD and self.aws_session:
             try:
                 async with self.aws_session.client("autoscaling") as autoscaling:
@@ -126,6 +149,7 @@ class MonitorService:
                             HonorCooldown=True
                         )
                         self.logger.info(f"Successfully scaled up to {new_capacity} workers")
+                        self.last_scale_action_time = datetime.now(timezone.utc)
                     else:
                         self.logger.info(f"Already at maximum capacity ({max_size}), cannot scale up further")
             except Exception as e:
@@ -149,6 +173,7 @@ class MonitorService:
 
                     service.scale(new_replicas)
                     self.logger.info(f"Successfully scaled up to {new_replicas} workers")
+                    self.last_scale_action_time = datetime.now(timezone.utc)
                 else:
                     self.logger.info(f"Already at maximum capacity ({max_replicas}), cannot scale up further")
             except Exception as e:
@@ -158,6 +183,10 @@ class MonitorService:
 
         
     async def _scale_down_worker(self):
+        if (datetime.now(timezone.utc) - self.last_scale_action_time).total_seconds() < self.scale_cooldown_seconds:
+            self.logger.info(f"Scaling down skipped due to cooldown. Remaining: {self.scale_cooldown_seconds - (datetime.now(timezone.utc) - self.last_scale_action_time).total_seconds():.2f}s")
+            return
+
         if settings.RUNNING_IN_CLOUD and self.aws_session:
             try:
                 # Get current ASG details
@@ -184,6 +213,7 @@ class MonitorService:
                             HonorCooldown=True
                         )
                         self.logger.info(f"Successfully scaled down to {new_capacity} workers")
+                        self.last_scale_action_time = datetime.now(timezone.utc)
                     else:
                         self.logger.info(f"Already at minimum capacity ({min_size}), cannot scale down further")
             except Exception as e:
@@ -207,6 +237,7 @@ class MonitorService:
                     
                     service.scale(new_replicas)
                     self.logger.info(f"Successfully scaled Docker service to {new_replicas} replicas")
+                    self.last_scale_action_time = datetime.now(timezone.utc)
                 else:
                     self.logger.info(f"Already at minimum Docker replicas ({min_replicas}), cannot scale down further")
             except Exception as e:
