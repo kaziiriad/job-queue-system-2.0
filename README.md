@@ -7,7 +7,7 @@ A distributed job queue system built with FastAPI, Redis, and Docker. This syste
 ## Features
 
 - **Job Queue Management**: Create, cancel, and monitor jobs with different priority levels
-- **Worker Auto-scaling**: Automatically scale workers based on queue size
+- **Worker Auto-scaling**: Automatically scales workers based on job load per worker, with a cooldown period to prevent rapid scaling fluctuations.
 - **Web Dashboard**: Real-time monitoring of queue metrics and worker status
 - **Job Management UI**: User-friendly interface for creating and managing jobs
 - **Fault Tolerance**: Automatic retry mechanism and dead-letter queue for failed jobs
@@ -113,20 +113,48 @@ flowchart LR
 
 ### Production Setup with Docker Swarm
 
-1. **Initialize Docker Swarm** (if not already done):
-   ```bash
-   docker swarm init
-   ```
+For a production-like environment that supports worker auto-scaling, the system should be deployed to a Docker Swarm cluster. The provided scripts automate this process.
 
-2. **Deploy the stack**:
-   ```bash
-   docker stack deploy -c docker-compose.yml job-queue
-   ```
+#### Prerequisites
 
-3. **Scale workers manually** (if needed):
-   ```bash
-   docker service scale job-queue_worker=3
-   ```
+-   Docker must be installed and running.
+-   If not already initialized, the scripts will attempt to initialize Docker Swarm mode.
+
+#### Automated Stack Management Scripts
+
+The project includes scripts to simplify the management of the Docker Swarm stack:
+
+-   `start-stack.sh`: Builds the Docker images, pushes them to a local registry, and deploys the entire stack to Docker Swarm.
+-   `stop-stack.sh`: Stops and removes the Docker Swarm stack. It also provides an option to clean up persistent data volumes.
+-   `restart-stack.sh`: A convenient script that stops, removes, and redeploys the stack, ensuring a fresh start.
+
+#### Running the System
+
+1.  **Start the stack**:
+    Execute the `start-stack.sh` script to build the images and deploy the services.
+
+    ```bash
+    ./start-stack.sh
+    ```
+
+2.  **Access the application**:
+    Once the stack is running, you can access the different parts of the system at:
+    -   **Home**: `http://localhost:8000/`
+    -   **Dashboard**: `http://localhost:8000/dashboard/`
+    -   **Job Management**: `http://localhost:8000/jobs/manage`
+    -   **API Docs**: `http://localhost:8000/docs`
+
+3.  **Monitor the stack**:
+    You can check the status of the services in the stack with:
+    ```bash
+    docker stack ps job-queue
+    ```
+
+4.  **Stopping the stack**:
+    To stop all services and remove the stack, run:
+    ```bash
+    ./stop-stack.sh
+    ```
 
 ## Configuration
 
@@ -242,6 +270,56 @@ job-queue-system-2.0/
 3. **Monitor Service Errors**:
    - For Docker Swarm scaling issues, ensure Docker socket is mounted
    - Check monitor logs: `docker service logs job-queue_monitor`
+
+## Testing
+
+The project includes a comprehensive test suite to ensure reliability and correctness.
+
+### Running Tests
+
+To run all tests (unit, integration, and API tests), execute the following command from the project root:
+
+```bash
+pytest
+```
+
+### Test Coverage
+
+- **Unit Tests**: Verify the core logic of individual services (Queue, Worker, Monitor).
+- **Integration Tests**: Ensure different services interact correctly in various scenarios, including job dependencies and failure handling.
+- **API Tests**: Validate the functionality of the REST API endpoints.
+
+## Stress Testing
+
+This project includes a stress testing framework to evaluate the system's performance and stability under heavy load. The framework consists of a Python script (`stress-test.py`) that bombards the API with job creation requests and a shell script (`run-stress-test.sh`) to easily run predefined test scenarios.
+
+### Running Stress Tests
+
+To run the stress tests, use the interactive `run-stress-test.sh` script:
+
+```bash
+./run-stress-test.sh
+```
+
+This script provides a menu with several predefined test scenarios:
+
+-   **Light Load Test**: 100 jobs with low concurrency.
+-   **Medium Load Test**: 500 jobs with medium concurrency.
+-   **Heavy Load Test**: 1000 jobs with high concurrency.
+-   **Dependency-Heavy Test**: 300 jobs with a high probability of dependencies.
+-   **Priority Distribution Test**: 300 jobs with an equal distribution of priorities.
+-   **Custom Test**: Allows you to specify your own parameters for the number of jobs, concurrency, priority distribution, and more.
+
+### How It Works
+
+The `stress-test.py` script uses `aiohttp` to send asynchronous requests to the job creation endpoint. It allows for customization of:
+
+-   **Number of jobs**: The total number of jobs to create.
+-   **Concurrency**: The number of parallel requests to send.
+-   **Priority Distribution**: The percentage of jobs for each priority level (high, normal, low).
+-   **Dependency Probability**: The likelihood that a job will have dependencies on other jobs.
+
+During the test, the script monitors the queue and worker metrics in real-time and provides a summary of the final job statuses upon completion.
 
 ## License
 
